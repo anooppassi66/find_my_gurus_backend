@@ -1,0 +1,34 @@
+{
+  "name": "find-my-gurus-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Find My Gurus \u2014 Node.js/Express API backed by MySQL (Prisma)",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "seed": "node prisma/seed.js",
+    "google:auth": "node scripts/google-auth.js"
+  },
+  "dependencies": {
+    "@googleapis/calendar": "^20.1.0",
+    "@prisma/client": "^5.19.1",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^10.0.16",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4",
+    "prisma": "^5.19.1"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  }
+}

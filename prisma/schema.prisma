@@ -1,0 +1,285 @@
+// Find My Gurus — backend database schema
+// Datasource: MySQL. Run `npx prisma migrate dev` from development/backend after
+// copying .env.example to .env and setting DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDENT
+  GURU
+  ADMIN
+}
+
+enum BudgetType {
+  FIXED_MILESTONES
+  FIXED_FULL_PAY
+  HOURLY // reserved for a future phase, not orderable yet
+}
+
+enum RequirementStatus {
+  OPEN
+  MATCHED
+  IN_CONTRACT
+  CLOSED
+  CANCELLED
+}
+
+enum ProposalStatus {
+  PENDING
+  SHORTLISTED
+  ACCEPTED
+  DECLINED
+}
+
+enum ContractStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  DISPUTED
+}
+
+enum MilestoneStatus {
+  PENDING_APPROVAL // created, awaiting the *creator's* final approval after the other party accepted/edited
+  ACTIVE // approved by creator, work in progress
+  SUBMITTED // guru marked as complete, awaiting student release
+  RELEASED // funds released to guru wallet
+  REJECTED
+  CANCELLED
+}
+
+enum WalletTxType {
+  CREDIT
+  DEBIT
+}
+
+enum WalletTxReason {
+  TOPUP
+  MILESTONE_ESCROW // student wallet debited into escrow when a milestone becomes ACTIVE
+  MILESTONE_RELEASE // guru wallet credited (net of commission) when a milestone is RELEASED
+  COMMISSION // platform revenue leg (informational; not a user-wallet-facing debit/credit but logged the same way with userId = null)
+  REFUND // escrow returned to student wallet (milestone rejected/contract cancelled)
+  PAYOUT // guru wallet -> bank withdrawal
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  role         Role
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  country      String?
+  city         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  guruProfile        GuruProfile?
+  requirements        Requirement[]        @relation("StudentRequirements")
+  proposals           Proposal[]           @relation("GuruProposals")
+  contractsAsStudent  Contract[]           @relation("StudentContracts")
+  contractsAsGuru     Contract[]           @relation("GuruContracts")
+  milestonesCreated   Milestone[]          @relation("MilestoneCreatedBy")
+  walletTransactions  WalletTransaction[]
+  messagesSent        Message[]            @relation("MessagesSent")
+  meetingsCreated     Meeting[]            @relation("MeetingCreatedBy")
+  meetingsCancelled   Meeting[]            @relation("MeetingCancelledBy")
+  conversationsAsA    Conversation[]       @relation("ConversationUserA")
+  conversationsAsB    Conversation[]       @relation("ConversationUserB")
+}
+
+model Category {
+  id       Int        @id @default(autoincrement())
+  name     String
+  parentId Int?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+
+  requirements Requirement[]
+  guruProfiles GuruProfile[]
+}
+
+model GuruProfile {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @unique
+  user           User     @relation(fields: [userId], references: [id])
+  headline       String?
+  bio            String?  @db.Text
+  categoryId     Int?
+  category       Category? @relation(fields: [categoryId], references: [id])
+  skills         String?  @db.Text // comma-separated for the prototype; normalize to a join table later
+  hourlyRate     Decimal? @db.Decimal(10, 2)
+  fixedRateMin   Decimal? @db.Decimal(10, 2)
+  fixedRateMax   Decimal? @db.Decimal(10, 2)
+  introVideoUrl  String?
+  ratingAvg      Decimal  @default(0) @db.Decimal(3, 2)
+  ratingCount    Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model Requirement {
+  id           Int                @id @default(autoincrement())
+  studentId    Int
+  student      User               @relation("StudentRequirements", fields: [studentId], references: [id])
+  title        String
+  categoryId   Int?
+  category     Category?          @relation(fields: [categoryId], references: [id])
+  description  String             @db.Text
+  budgetType   BudgetType         @default(FIXED_MILESTONES)
+  budgetAmount Decimal            @db.Decimal(10, 2)
+  status       RequirementStatus  @default(OPEN)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  proposals Proposal[]
+  contract  Contract?
+}
+
+model Proposal {
+  id              Int            @id @default(autoincrement())
+  requirementId   Int
+  requirement     Requirement    @relation(fields: [requirementId], references: [id])
+  guruId          Int
+  guru            User           @relation("GuruProposals", fields: [guruId], references: [id])
+  coverLetter     String         @db.Text
+  proposedAmount  Decimal        @db.Decimal(10, 2)
+  status          ProposalStatus @default(PENDING)
+  createdAt       DateTime       @default(now())
+
+  @@unique([requirementId, guruId])
+}
+
+model Contract {
+  id            Int            @id @default(autoincrement())
+  requirementId Int            @unique
+  requirement   Requirement    @relation(fields: [requirementId], references: [id])
+  studentId     Int
+  student       User           @relation("StudentContracts", fields: [studentId], references: [id])
+  guruId        Int
+  guru          User           @relation("GuruContracts", fields: [guruId], references: [id])
+  status        ContractStatus @default(ACTIVE)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  milestones Milestone[]
+}
+
+model Milestone {
+  id            Int             @id @default(autoincrement())
+  contractId    Int
+  contract      Contract        @relation(fields: [contractId], references: [id])
+  name          String
+  amount        Decimal         @db.Decimal(10, 2)
+  startDate     DateTime?
+  endDate       DateTime?
+  status        MilestoneStatus @default(PENDING_APPROVAL)
+  createdById   Int
+  createdBy     User            @relation("MilestoneCreatedBy", fields: [createdById], references: [id])
+  commissionPct Decimal?        @db.Decimal(5, 2) // snapshotted from CommissionBand at release time
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  walletTransactions WalletTransaction[]
+}
+
+// Admin-configurable commission bands — mirrors the static prototype's
+// guru-commission-calculator.html and admin-commission-bands.html.
+model CommissionBand {
+  id         Int      @id @default(autoincrement())
+  minAmount  Decimal  @db.Decimal(10, 2)
+  maxAmount  Decimal? @db.Decimal(10, 2) // null = open-ended top band
+  ratePct    Decimal  @db.Decimal(5, 2)
+  active     Boolean  @default(true)
+}
+
+// Admin-configurable minimum milestone amount — mirrors admin-milestone-settings.html.
+model PlatformSetting {
+  key   String @id
+  value String
+}
+
+model WalletTransaction {
+  id          Int             @id @default(autoincrement())
+  userId      Int
+  user        User            @relation(fields: [userId], references: [id])
+  type        WalletTxType
+  reason      WalletTxReason
+  amount      Decimal         @db.Decimal(10, 2)
+  description String?
+  milestoneId Int?
+  milestone   Milestone?      @relation(fields: [milestoneId], references: [id])
+  createdAt   DateTime        @default(now())
+}
+
+model Conversation {
+  id        Int       @id @default(autoincrement())
+  userAId   Int
+  userA     User      @relation("ConversationUserA", fields: [userAId], references: [id])
+  userBId   Int
+  userB     User      @relation("ConversationUserB", fields: [userBId], references: [id])
+  createdAt DateTime  @default(now())
+
+  messages Message[]
+  meetings Meeting[]
+
+  @@unique([userAId, userBId])
+}
+
+enum MessageType {
+  TEXT
+  MEETING_SCHEDULED // system card posted when a participant schedules a Google Meet
+  MEETING_CANCELLED // system note posted when a participant cancels it
+}
+
+model Message {
+  id             Int          @id @default(autoincrement())
+  conversationId Int
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  senderId       Int
+  sender         User         @relation("MessagesSent", fields: [senderId], references: [id])
+  type           MessageType  @default(TEXT)
+  body           String       @db.Text
+  meetingId      Int?
+  meeting        Meeting?     @relation(fields: [meetingId], references: [id])
+  createdAt      DateTime     @default(now())
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  CANCELLED
+}
+
+// A Google Meet appointment scheduled from a chat conversation. The Meet link
+// is auto-created through a Google Calendar event owned by the platform's
+// Google account (see src/services/googleMeet.js).
+model Meeting {
+  id             Int           @id @default(autoincrement())
+  conversationId Int
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  createdById    Int
+  createdBy      User          @relation("MeetingCreatedBy", fields: [createdById], references: [id])
+  title          String
+  description    String?       @db.Text
+  startTime      DateTime
+  endTime        DateTime
+  timeZone       String        @default("UTC")
+  status         MeetingStatus @default(SCHEDULED)
+  meetUrl        String?
+  googleEventId  String?
+  calendarUrl    String?       @db.Text
+  cancelledById  Int?
+  cancelledBy    User?         @relation("MeetingCancelledBy", fields: [cancelledById], references: [id])
+  cancelledAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  messages Message[]
+
+  @@index([conversationId, startTime])
+}
